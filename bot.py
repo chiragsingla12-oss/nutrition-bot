@@ -425,7 +425,8 @@ def home():
 def ping():
     return {"status": "alive", "time": get_ist_display()}
 
-Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
+port = int(os.getenv("PORT", 8080))
+Thread(target=lambda: app.run(host='0.0.0.0', port=port)).start()
 
 # ==========================================
 # START
