@@ -1,0 +1,5 @@
+pyTelegramBotAPI==4.16.1
+openai==1.11.0
+pytz==2024.1
+flask==3.0.0
+httpx==0.24.0
