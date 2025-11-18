@@ -404,8 +404,9 @@ def handle_chat(message):
     except Exception as e:
         bot.reply_to(message, f"⚠️ Error: {e}")
 
+
 # ==========================================
-# FLASK SERVER
+# FLASK SERVER (Must start FIRST for Render)
 # ==========================================
 app = Flask('')
 
@@ -425,16 +426,34 @@ def home():
 def ping():
     return {"status": "alive", "time": get_ist_display()}
 
-port = int(os.getenv("PORT", 8080))
-Thread(target=lambda: app.run(host='0.0.0.0', port=port)).start()
+@app.route('/health')
+def health():
+    # Quick health check for Render
+    return {"status": "ok"}, 200
 
 # ==========================================
-# START
+# START SEQUENCE (Flask first, then bot)
 # ==========================================
-print("=" * 60)
-print("🇮🇳 BOT STARTING")
-print("⏰ IST: {ist}".format(ist=get_ist_display()))
-print("👤 Chat: {chat}".format(chat=active_chat_id or 'None'))
-print("=" * 60)
+def start_bot():
+    """Start Telegram bot in background after Flask is ready"""
+    import time
+    time.sleep(5)  # Wait for Flask to be ready
+    print("✅ Starting Telegram bot...")
+    bot.infinity_polling()
+
+if __name__ == '__main__':
+    print("="*60)
+    print("🇮🇳 BOT STARTING")
+    print(f"⏰ IST: {get_ist_display()}")
+    print(f"👤 Chat: {active_chat_id or 'None'}")
+    print("="*60)
+    
+    # Start bot in background thread
+    Thread(target=start_bot, daemon=True).start()
+    
+    # Start Flask in MAIN thread (Render needs this)
+    port = int(os.getenv("PORT", 8080))
+    print(f"🌐 Starting Flask on port {port}")
+    app.run(host='0.0.0.0', port=port)
 
 bot.infinity_polling()
