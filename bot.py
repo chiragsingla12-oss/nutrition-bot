@@ -83,31 +83,62 @@ def init_database():
 init_database()
 
 def add_task(chat_id, task_description, target_datetime):
+    """Add a new task to database with smart reminder timing"""
     try:
+        current_time = datetime.datetime.now(IST)
+        time_until_task = (target_datetime - current_time).total_seconds() / 60  # minutes
+        
+        # Calculate reminder and followup times
         reminder_time = target_datetime - datetime.timedelta(hours=1)
         followup_time = target_datetime + datetime.timedelta(minutes=15)
-
+        
+        # Check if task is less than 1 hour away
+        send_reminder_immediately = time_until_task < 60
+        
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO tasks (chat_id, task_description, target_datetime, 
-                             reminder_datetime, followup_datetime, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                             reminder_datetime, followup_datetime, created_at, reminder_sent)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', (
             chat_id,
             task_description,
             target_datetime.isoformat(),
             reminder_time.isoformat(),
             followup_time.isoformat(),
-            datetime.datetime.now(IST).isoformat()
+            current_time.isoformat(),
+            1 if send_reminder_immediately else 0  # Mark as sent if immediate
         ))
         task_id = cursor.lastrowid
         conn.commit()
         conn.close()
+        
+        # Send immediate reminder if less than 1 hour away
+        if send_reminder_immediately:
+            try:
+                target_display = target_datetime.strftime("%I:%M %p on %B %d, %Y")
+                minutes_away = int(time_until_task)
+                
+                message = (
+                    f"⏰ *IMMEDIATE TASK REMINDER*\n\n"
+                    f"📋 {task_description}\n\n"
+                    f"⏱️ Scheduled for: {target_display}\n"
+                    f"🚨 Only {minutes_away} minutes away!\n\n"
+                    f"I'm reminding you NOW since it's less than 1 hour away! 🔔"
+                )
+                
+                bot.send_message(chat_id, message, parse_mode="Markdown")
+                print(f"✅ Sent IMMEDIATE reminder for task {task_id} (gap: {minutes_away} min)")
+            except Exception as e:
+                print(f"❌ Error sending immediate reminder: {e}")
+        
         return task_id
+        
     except Exception as e:
         print(f"❌ Error adding task: {e}")
         return None
+
 
 def get_pending_reminders():
     try:
@@ -200,42 +231,76 @@ def get_user_tasks(chat_id, include_completed=False):
         return []
 
 def parse_reminder_request(text):
+    """Parse natural language reminder request"""
     try:
         text = text.lower()
         for prefix in ['remind me to ', 'remind me ', 'reminder to ', 'reminder ']:
             if text.startswith(prefix):
                 text = text[len(prefix):]
                 break
-
+        
         time_indicators = ['at', 'on', 'tomorrow', 'today', 'next', 'in']
-
+        
         time_start_idx = len(text)
         for indicator in time_indicators:
             idx = text.rfind(' ' + indicator + ' ')
             if idx != -1 and idx < time_start_idx:
                 time_start_idx = idx
-
+        
         if time_start_idx < len(text):
             task_desc = text[:time_start_idx].strip()
             time_phrase = text[time_start_idx:].strip()
         else:
             task_desc = text
             time_phrase = text
-
+        
+        # Get current IST time for reference
+        ist_now = datetime.datetime.now(IST)
+        
+        # Parse with explicit settings
         parsed_date = dateparser.parse(
             time_phrase,
             settings={
                 'TIMEZONE': 'Asia/Kolkata',
                 'RETURN_AS_TIMEZONE_AWARE': True,
-                'PREFER_DATES_FROM': 'future'
+                'PREFER_DATES_FROM': 'future',
+                'RELATIVE_BASE': ist_now.replace(tzinfo=None)  # Use IST as base
             }
         )
-
+        
         if parsed_date is None:
             return None, None
-
-        target_time = parsed_date.astimezone(IST)
-
+        
+        # Ensure timezone is IST
+        if parsed_date.tzinfo is None:
+            # If no timezone, assume IST
+            target_time = IST.localize(parsed_date)
+        else:
+            # Convert to IST
+            target_time = parsed_date.astimezone(IST)
+        
+        # If parsed time is in the past but user said "at X PM today", add to today
+        if target_time <= ist_now:
+            # Check if user specified a time without date
+            if 'tomorrow' not in time_phrase.lower() and 'next' not in time_phrase.lower():
+                # Try parsing just the time
+                time_only = dateparser.parse(
+                    time_phrase,
+                    settings={'PARSERS': ['absolute-time']}
+                )
+                if time_only:
+                    # Combine today's date with parsed time
+                    target_time = ist_now.replace(
+                        hour=time_only.hour,
+                        minute=time_only.minute,
+                        second=0,
+                        microsecond=0
+                    )
+                    # If still in past, add one day
+                    if target_time <= ist_now:
+                        target_time = target_time + datetime.timedelta(days=1)
+        
+        # Extract task description if needed
         if not task_desc or len(task_desc) < 3:
             original_lower = text.lower()
             for word in time_phrase.split():
@@ -243,9 +308,9 @@ def parse_reminder_request(text):
                 if idx > 0:
                     task_desc = text[:idx].strip()
                     break
-
+        
         return task_desc, target_time
-
+        
     except Exception as e:
         print(f"❌ Error parsing reminder: {e}")
         return None, None
@@ -887,7 +952,9 @@ def handle_chat(message):
         task_desc, target_time = parse_reminder_request(user_text)
 
         if task_desc and target_time:
-            if target_time <= datetime.datetime.now(IST):
+            ist_now = datetime.datetime.now(IST)
+print(f"🕐 DEBUG: Current IST: {ist_now}, Target: {target_time}")  # Debug log
+if target_time <= ist_now:
                 bot.reply_to(message,
                     "⚠️ That time is in the past!\n\n"
                     "Please specify a future time.\n\n"
@@ -900,18 +967,35 @@ def handle_chat(message):
             task_id = add_task(message.chat.id, task_desc, target_time)
 
             if task_id:
-                reminder_time = target_time - datetime.timedelta(hours=1)
-                followup_time = target_time + datetime.timedelta(minutes=15)
-
-                bot.reply_to(message,
-                    f"✅ *Task Reminder Set!*\n\n"
-                    f"📋 Task: {task_desc}\n\n"
-                    f"⏰ Scheduled for: {target_time.strftime('%I:%M %p on %B %d, %Y')}\n\n"
-                    f"I'll remind you:\n"
-                    f"• 1 hour before: {reminder_time.strftime('%I:%M %p')}\n"
-                    f"• Follow-up: {followup_time.strftime('%I:%M %p')}\n\n"
-                    f"Use /tasks to see all your tasks! 📝",
-                    parse_mode="Markdown")
+    ist_now = datetime.datetime.now(IST)
+    time_until_task = (target_time - ist_now).total_seconds() / 60  # minutes
+    
+    reminder_time = target_time - datetime.timedelta(hours=1)
+    followup_time = target_time + datetime.timedelta(minutes=15)
+    
+    if time_until_task < 60:
+        # Immediate reminder case
+        bot.reply_to(message,
+            f"✅ *Task Reminder Set!*\n\n"
+            f"📋 Task: {task_desc}\n\n"
+            f"⏰ Scheduled for: {target_time.strftime('%I:%M %p on %B %d, %Y')}\n\n"
+            f"🚨 Immediate reminder sent (less than 1 hour away)!\n"
+            f"📨 Follow-up at: {followup_time.strftime('%I:%M %p')}\n\n"
+            f"Use /tasks to see all your tasks! 📝",
+            parse_mode="Markdown")
+    else:
+        # Normal case
+        bot.reply_to(message,
+            f"✅ *Task Reminder Set!*\n\n"
+            f"📋 Task: {task_desc}\n\n"
+            f"⏰ Scheduled for: {target_time.strftime('%I:%M %p on %B %d, %Y')}\n\n"
+            f"I'll remind you:\n"
+            f"• 1 hour before: {reminder_time.strftime('%I:%M %p')}\n"
+            f"• Follow-up: {followup_time.strftime('%I:%M %p')}\n\n"
+            f"Use /tasks to see all your tasks! 📝",
+            parse_mode="Markdown")
+    
+    print(f"✅ Added task {task_id} for user {message.chat.id}: {task_desc} at {target_time}")
                 print(f"✅ Added task {task_id} for user {message.chat.id}: {task_desc} at {target_time}")
             else:
                 bot.reply_to(message, "❌ Sorry, couldn't save your task. Please try again!")
