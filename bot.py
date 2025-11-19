@@ -810,7 +810,7 @@ def handle_chat(message):
     user_text = message.text.strip()
     user_lower = user_text.lower()
 
-    workout_keywords = ['done', 'workout done', 'exercise done', 'finished workout', 'completed workout', 'finished', 'completed']
+    workout_keywords = ['workout done', 'exercise done', 'finished workout', 'completed workout', 'gym done', 'training done']
     if user_lower in workout_keywords:
         workout_done_today = True
         bot.reply_to(message, 
