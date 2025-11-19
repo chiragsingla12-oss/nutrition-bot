@@ -1005,6 +1005,7 @@ def handle_chat(message):
                 "• Remind me to check email on Dec 5 at 10 AM\n\n"
                 "Be specific about the time!")
         return
+
     if len(user_text) <= 3 and not any(word in user_lower for word in ['hi', 'hey', 'yes', 'no', 'ok', 'hmm']):
         bot.reply_to(message,
             "I'm not sure what you mean by that! 😊\n\n"
