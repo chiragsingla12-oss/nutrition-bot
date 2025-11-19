@@ -606,7 +606,7 @@ threading.Thread(target=scheduler, daemon=True).start()
 
 @bot.message_handler(content_types=['voice'])
 def handle_voice(message):
-    """Handle voice messages - transcribe and process"""
+    """Handle voice messages - transcribe in English only"""
     try:
         processing_msg = bot.reply_to(message, "🎙️ Transcribing your voice message...")
         
@@ -620,14 +620,32 @@ def handle_voice(message):
         with open(temp_file, 'rb') as audio_file:
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
-                file=audio_file
+                file=audio_file,
+                language="en",
+                response_format="text"
             )
         
-        transcribed_text = transcript.text
+        transcribed_text = transcript if isinstance(transcript, str) else transcript.text
+        
+        import re
+        if re.search(r'[\u0900-\u097F\u0980-\u09FF\u0A00-\u0AFF]', transcribed_text):
+            bot.delete_message(message.chat.id, processing_msg.message_id)
+            bot.reply_to(message, 
+                "⚠️ *Language Note*\n\n"
+                "Please speak in English or Hinglish!\n\n"
+                "✅ Good: 'mujhe paneer khana hai'\n"
+                "❌ Avoid: देवनागरी script\n\n"
+                "Try again! 🎙️",
+                parse_mode="Markdown")
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+            return
         
         bot.delete_message(message.chat.id, processing_msg.message_id)
         
-        bot.reply_to(message, f"🎙️ *You said:*\n\"{transcribed_text}\"", parse_mode="Markdown")
+        bot.reply_to(message, 
+            f"🎙️ *You said:*\n\"{transcribed_text}\"", 
+            parse_mode="Markdown")
         
         if os.path.exists(temp_file):
             os.remove(temp_file)
@@ -917,7 +935,13 @@ def handle_chat(message):
             "I'm here to help!")
         return
 
-    SYSTEM_PROMPT = """You are a supportive but direct Indian nutritionist helping a 33-year-old male client reach his goal of 74kg from 84kg. He's been stuck at a plateau for 1.5 years.
+    SYSTEM_PROMPT = """**CRITICAL: ALWAYS RESPOND IN ENGLISH ONLY**
+- If user writes in Hinglish (romanized Hindi like 'kya mai khana chahiye'), understand it and respond in English
+- Never use Devanagari (हिंदी) or any non-English script
+- Keep all responses in simple English
+
+You are a supportive but direct Indian vegetarian nutritionist helping a 33-year-old male client reach his goal of 74kg from 84kg. He's been stuck at a plateau for 1.5 years.
+
 
 CLIENT CONTEXT:
 - Lives with wife and 2 kids (elder is 5 years old)
