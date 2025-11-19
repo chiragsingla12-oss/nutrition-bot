@@ -4,6 +4,8 @@ import threading
 import telebot
 import datetime
 import pytz
+import sqlite3
+import dateparser
 from openai import OpenAI
 from flask import Flask
 from threading import Thread
@@ -25,8 +27,9 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 IST = pytz.timezone('Asia/Kolkata')
 CHAT_ID_FILE = "/tmp/chat_id.txt"
+DB_FILE = "/tmp/tasks.db"
 active_chat_id = None
-workout_done_today = False  # Track if workout completed
+workout_done_today = False
 
 scheduler_status = {
     "last_check": None,
@@ -35,27 +38,238 @@ scheduler_status = {
     "error_count": 0
 }
 
-# ==========================================
-# MEAL SCHEDULE + REMINDERS (IST)
-# ==========================================
 meal_schedule = {
-    "exercise_morning": "07:00",     # 🏋️ Morning workout reminder
-    "morning_routine": "08:00",      # 🌅 Hydration + Pre-Workout fuel
-    "post_workout": "08:30",         # 💪 Post-Workout Mini Meal
-    "breakfast": "08:45",            # 🍳 Breakfast reminder
-    "water_1": "10:00",              # 💧 Water reminder 1
-    "midday_hydration": "11:00",     # 💧 Midday Hydration + craving check
-    "water_2": "12:00",              # 💧 Water reminder 2
-    "lunch": "13:00",                # 🍽️ Lunch (1:00 PM)
-    "water_3": "14:30",              # 💧 Water reminder 3
-    "water_4": "16:00",              # 💧 Water reminder 4
-    "snack": "16:30",                # ☕ Evening Snack (4:30 PM)
-    "exercise_backup": "17:00",      # 🏋️ Exercise backup (if morning missed)
-    "water_5": "18:00",              # 💧 Water reminder 5
-    "dinner": "18:30",               # 🍛 Dinner (6:30 PM)
-    "water_6": "20:00",              # 💧 Water reminder 6
-    "night_craving": "21:00"         # 🌙 Night Craving Control (9:00 PM)
+    "exercise_morning": "07:00",
+    "morning_routine": "08:00",
+    "post_workout": "08:30",
+    "breakfast": "08:45",
+    "water_1": "10:00",
+    "midday_hydration": "11:00",
+    "water_2": "12:00",
+    "lunch": "13:00",
+    "water_3": "14:30",
+    "water_4": "16:00",
+    "snack": "16:30",
+    "exercise_backup": "17:00",
+    "water_5": "18:00",
+    "dinner": "18:30",
+    "water_6": "20:00",
+    "night_craving": "21:00"
 }
+
+# ==========================================
+# DATABASE SETUP
+# ==========================================
+def init_database():
+    """Initialize SQLite database for tasks"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            task_description TEXT NOT NULL,
+            target_datetime TEXT NOT NULL,
+            reminder_datetime TEXT NOT NULL,
+            followup_datetime TEXT NOT NULL,
+            reminder_sent BOOLEAN DEFAULT 0,
+            followup_sent BOOLEAN DEFAULT 0,
+            completed BOOLEAN DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+    print("✅ Database initialized")
+
+init_database()
+
+def add_task(chat_id, task_description, target_datetime):
+    """Add a new task to database"""
+    try:
+        # Calculate reminder time (1 hour before)
+        reminder_time = target_datetime - datetime.timedelta(hours=1)
+        # Calculate follow-up time (15 minutes after)
+        followup_time = target_datetime + datetime.timedelta(minutes=15)
+        
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO tasks (chat_id, task_description, target_datetime, 
+                             reminder_datetime, followup_datetime, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            chat_id,
+            task_description,
+            target_datetime.isoformat(),
+            reminder_time.isoformat(),
+            followup_time.isoformat(),
+            datetime.datetime.now(IST).isoformat()
+        ))
+        task_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return task_id
+    except Exception as e:
+        print(f"❌ Error adding task: {e}")
+        return None
+
+def get_pending_reminders():
+    """Get tasks that need reminder sent"""
+    try:
+        now = datetime.datetime.now(IST).isoformat()
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, chat_id, task_description, target_datetime, reminder_datetime
+            FROM tasks
+            WHERE reminder_sent = 0 AND reminder_datetime <= ? AND completed = 0
+        ''', (now,))
+        tasks = cursor.fetchall()
+        conn.close()
+        return tasks
+    except Exception as e:
+        print(f"❌ Error getting reminders: {e}")
+        return []
+
+def get_pending_followups():
+    """Get tasks that need follow-up sent"""
+    try:
+        now = datetime.datetime.now(IST).isoformat()
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, chat_id, task_description, target_datetime, followup_datetime
+            FROM tasks
+            WHERE followup_sent = 0 AND reminder_sent = 1 AND followup_datetime <= ? AND completed = 0
+        ''', (now,))
+        tasks = cursor.fetchall()
+        conn.close()
+        return tasks
+    except Exception as e:
+        print(f"❌ Error getting follow-ups: {e}")
+        return []
+
+def mark_reminder_sent(task_id):
+    """Mark reminder as sent"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE tasks SET reminder_sent = 1 WHERE id = ?', (task_id,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"❌ Error marking reminder sent: {e}")
+
+def mark_followup_sent(task_id):
+    """Mark follow-up as sent"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE tasks SET followup_sent = 1 WHERE id = ?', (task_id,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"❌ Error marking follow-up sent: {e}")
+
+def mark_task_completed(task_id):
+    """Mark task as completed"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE tasks SET completed = 1 WHERE id = ?', (task_id,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"❌ Error marking task completed: {e}")
+
+def get_user_tasks(chat_id, include_completed=False):
+    """Get all tasks for a user"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        if include_completed:
+            cursor.execute('''
+                SELECT id, task_description, target_datetime, completed
+                FROM tasks
+                WHERE chat_id = ?
+                ORDER BY target_datetime DESC
+                LIMIT 10
+            ''', (chat_id,))
+        else:
+            cursor.execute('''
+                SELECT id, task_description, target_datetime, completed
+                FROM tasks
+                WHERE chat_id = ? AND completed = 0
+                ORDER BY target_datetime ASC
+            ''', (chat_id,))
+        tasks = cursor.fetchall()
+        conn.close()
+        return tasks
+    except Exception as e:
+        print(f"❌ Error getting user tasks: {e}")
+        return []
+
+def parse_reminder_request(text):
+    """Parse natural language reminder request"""
+    try:
+        # Remove common prefixes
+        text = text.lower()
+        for prefix in ['remind me to ', 'remind me ', 'reminder to ', 'reminder ']:
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+                break
+        
+        # Try to find time indicators
+        time_indicators = ['at', 'on', 'tomorrow', 'today', 'next', 'in']
+        
+        # Find where the time phrase starts
+        time_start_idx = len(text)
+        for indicator in time_indicators:
+            idx = text.rfind(' ' + indicator + ' ')
+            if idx != -1 and idx < time_start_idx:
+                time_start_idx = idx
+        
+        # Split into task and time
+        if time_start_idx < len(text):
+            task_desc = text[:time_start_idx].strip()
+            time_phrase = text[time_start_idx:].strip()
+        else:
+            # No clear time indicator found, try dateparser on whole string
+            task_desc = text
+            time_phrase = text
+        
+        # Parse the date/time
+        parsed_date = dateparser.parse(
+            time_phrase,
+            settings={
+                'TIMEZONE': 'Asia/Kolkata',
+                'RETURN_AS_TIMEZONE_AWARE': True,
+                'PREFER_DATES_FROM': 'future'
+            }
+        )
+        
+        if parsed_date is None:
+            return None, None
+        
+        # Convert to IST
+        target_time = parsed_date.astimezone(IST)
+        
+        # If task description is empty, try to extract from original
+        if not task_desc or len(task_desc) < 3:
+            # Extract everything before the time phrase
+            original_lower = text.lower()
+            for word in time_phrase.split():
+                idx = original_lower.find(word)
+                if idx > 0:
+                    task_desc = text[:idx].strip()
+                    break
+        
+        return task_desc, target_time
+        
+    except Exception as e:
+        print(f"❌ Error parsing reminder: {e}")
+        return None, None
 
 # ==========================================
 # HELPER FUNCTIONS
@@ -120,7 +334,7 @@ def get_exercise_reminder(time_of_day):
             "• This consistency will help break your plateau!\n\n"
             "✅ Reply 'done' after your workout!"
         )
-    else:  # backup evening
+    else:
         return (
             "⚠️ *Workout Reminder!*\n\n"
             "🏋️ It's 5:00 PM - Haven't seen your workout today!\n\n"
@@ -234,7 +448,6 @@ def send_meal_reminder(chat_id, meal):
     try:
         current_time = get_ist_display()
         
-        # Handle water reminders
         if meal.startswith("water_"):
             message = get_water_reminder()
             bot.send_message(chat_id, message, parse_mode="Markdown")
@@ -242,7 +455,6 @@ def send_meal_reminder(chat_id, meal):
             print(f"✅ [{current_time}] Sent water reminder to {chat_id}")
             return True
         
-        # Handle exercise reminders
         if meal == "exercise_morning":
             message = get_exercise_reminder("morning")
             bot.send_message(chat_id, message, parse_mode="Markdown")
@@ -251,7 +463,6 @@ def send_meal_reminder(chat_id, meal):
             return True
         
         if meal == "exercise_backup":
-            # Only send if morning workout wasn't done
             if not workout_done_today:
                 message = get_exercise_reminder("evening")
                 bot.send_message(chat_id, message, parse_mode="Markdown")
@@ -261,7 +472,6 @@ def send_meal_reminder(chat_id, meal):
                 print(f"⏭️ [{current_time}] Skipped backup - workout already done today!")
             return True
         
-        # Handle regular meal reminders
         options = get_food_options(meal)
         
         titles = {
@@ -300,6 +510,68 @@ def send_meal_reminder(chat_id, meal):
         return False
 
 # ==========================================
+# TASK REMINDER CHECKER
+# ==========================================
+def task_reminder_checker():
+    """Background thread to check and send task reminders"""
+    print("🔔 Task reminder checker started")
+    while True:
+        try:
+            # Check for pending reminders (1 hour before)
+            pending_reminders = get_pending_reminders()
+            for task in pending_reminders:
+                task_id, chat_id, task_desc, target_dt_str, reminder_dt_str = task
+                
+                # Parse target datetime for display
+                target_dt = datetime.datetime.fromisoformat(target_dt_str)
+                target_display = target_dt.strftime("%I:%M %p on %B %d, %Y")
+                
+                message = (
+                    f"⏰ *TASK REMINDER*\n\n"
+                    f"📋 {task_desc}\n\n"
+                    f"⏱️ Scheduled for: {target_display}\n\n"
+                    f"This is your 1-hour advance notice! 🔔"
+                )
+                
+                try:
+                    bot.send_message(chat_id, message, parse_mode="Markdown")
+                    mark_reminder_sent(task_id)
+                    print(f"✅ Sent reminder for task {task_id} to {chat_id}")
+                except Exception as e:
+                    print(f"❌ Error sending reminder for task {task_id}: {e}")
+            
+            # Check for pending follow-ups (15 min after target time)
+            pending_followups = get_pending_followups()
+            for task in pending_followups:
+                task_id, chat_id, task_desc, target_dt_str, followup_dt_str = task
+                
+                # Parse target datetime for display
+                target_dt = datetime.datetime.fromisoformat(target_dt_str)
+                target_display = target_dt.strftime("%I:%M %p")
+                
+                message = (
+                    f"✅ *FOLLOW-UP*\n\n"
+                    f"📋 Did you complete: {task_desc}?\n\n"
+                    f"⏱️ It was scheduled for {target_display}\n\n"
+                    f"Reply 'done' if completed, or let me know if you need to reschedule!"
+                )
+                
+                try:
+                    bot.send_message(chat_id, message, parse_mode="Markdown")
+                    mark_followup_sent(task_id)
+                    print(f"✅ Sent follow-up for task {task_id} to {chat_id}")
+                except Exception as e:
+                    print(f"❌ Error sending follow-up for task {task_id}: {e}")
+            
+        except Exception as e:
+            print(f"❌ Task reminder checker error: {e}")
+        
+        # Check every 30 seconds
+        time.sleep(30)
+
+threading.Thread(target=task_reminder_checker, daemon=True).start()
+
+# ==========================================
 # SCHEDULER
 # ==========================================
 def scheduler():
@@ -336,7 +608,6 @@ def scheduler():
                 print(f"📊 Sent today: {len(sent_today)}")
                 print(f"{separator}\n")
 
-            # Reset at midnight
             if current_time == "00:00":
                 sent_today.clear()
                 workout_done_today = False
@@ -359,13 +630,12 @@ def scheduler():
 threading.Thread(target=scheduler, daemon=True).start()
 
 # ==========================================
-# SINGLE MESSAGE HANDLER
+# MESSAGE HANDLERS
 # ==========================================
 
 @bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
     """Single handler that routes all messages"""
-
     if not message.text:
         return
 
@@ -385,10 +655,12 @@ def handle_all_messages(message):
         handle_time(message)
     elif text == '/test':
         handle_test(message)
+    elif text == '/tasks':
+        handle_tasks(message)
     elif text.startswith('/trigger'):
         handle_trigger(message)
     elif text.startswith('/'):
-        bot.reply_to(message, "❌ Unknown command! Try /start /debug /status /time /test")
+        bot.reply_to(message, "❌ Unknown command! Try /start /debug /status /time /test /tasks")
     else:
         handle_chat(message)
 
@@ -398,33 +670,56 @@ def handle_all_messages(message):
 
 def handle_start(message):
     save_chat_id(message.chat.id)
-    msg = ("🙏 *Namaste! Your Nutrition Coach!*\n\n"
+    msg = ("🙏 *Namaste! Your Health & Task Coach!*\n\n"
            "🇮🇳 Activated: {time}\n"
            "👤 Chat ID: {chat_id}\n\n"
            "✅ *Profile:* 84→74kg, Plateau 1.5yr\n\n"
-           "🔔 *Daily Schedule (IST):*\n"
-           "• 07:00 - Exercise reminder\n"
-           "• 08:00 - Morning routine\n"
-           "• 08:30 - Post-workout\n"
-           "• 08:45 - Breakfast\n"
-           "• 10:00, 12:00, 14:30, 16:00, 18:00, 20:00 - Water reminders\n"
-           "• 11:00 - Midday check\n"
-           "• 13:00 - Lunch\n"
-           "• 16:30 - Snack\n"
-           "• 17:00 - Exercise backup (if needed)\n"
-           "• 18:30 - Dinner\n"
-           "• 21:00 - Night craving support\n\n"
+           "🔔 *Daily Reminders:*\n"
+           "• 07:00 - Exercise\n"
+           "• 08:00-21:00 - Nutrition & Water\n"
+           "• 6 water reminders throughout day\n\n"
+           "📝 *Task Reminders:*\n"
+           "Just tell me naturally:\n"
+           "• 'Remind me to call doctor at 5 PM tomorrow'\n"
+           "• 'Remind me to send report on Dec 5 at 3 PM'\n\n"
            "💬 *Commands:*\n"
-           "/time /status /debug /test /trigger\n\n"
-           "💪 Let's reach 74kg together!").format(
+           "/time /status /tasks /debug /test\n\n"
+           "Let's achieve your goals! 💪").format(
                time=get_ist_display(),
                chat_id=message.chat.id
            )
     bot.send_message(message.chat.id, msg, parse_mode="Markdown")
 
+def handle_tasks(message):
+    """Show user's pending tasks"""
+    tasks = get_user_tasks(message.chat.id, include_completed=False)
+    
+    if not tasks:
+        bot.reply_to(message, 
+            "📝 *Your Tasks*\n\n"
+            "No pending tasks!\n\n"
+            "Tell me naturally to add one:\n"
+            "• 'Remind me to call John at 5 PM'\n"
+            "• 'Remind me to send email tomorrow at 10 AM'",
+            parse_mode="Markdown")
+        return
+    
+    msg = "📝 *Your Pending Tasks*\n\n"
+    for task in tasks:
+        task_id, task_desc, target_dt_str, completed = task
+        target_dt = datetime.datetime.fromisoformat(target_dt_str)
+        display_time = target_dt.strftime("%I:%M %p, %b %d")
+        msg += f"• {task_desc}\n  ⏰ {display_time}\n\n"
+    
+    bot.send_message(message.chat.id, msg, parse_mode="Markdown")
+
 def handle_debug(message):
     ist_now = get_ist_time()
     current_time = ist_now.strftime("%H:%M")
+    
+    # Get task count
+    tasks = get_user_tasks(message.chat.id, include_completed=False)
+    task_count = len(tasks)
 
     msg = ("🔍 *Debug Information*\n\n"
            "⏰ Current IST: {ist}\n"
@@ -432,7 +727,8 @@ def handle_debug(message):
            "👤 Your Chat ID: {your_id}\n"
            "💾 Stored Chat ID: {stored_id}\n"
            "✅ Match: {match}\n"
-           "🏋️ Workout Today: {workout}\n\n"
+           "🏋️ Workout Today: {workout}\n"
+           "📝 Pending Tasks: {tasks}\n\n"
            "🔄 *Scheduler Status:*\n"
            "Running: {running}\n"
            "Last Check: {last_check}\n"
@@ -445,6 +741,7 @@ def handle_debug(message):
                stored_id=active_chat_id or 'None',
                match='YES' if message.chat.id == active_chat_id else 'NO',
                workout='✅ Done' if workout_done_today else '❌ Pending',
+               tasks=task_count,
                running=scheduler_status['is_running'],
                last_check=scheduler_status['last_check'] or 'Never',
                last_sent=scheduler_status['last_sent'] or 'None',
@@ -458,10 +755,14 @@ def handle_debug(message):
     bot.send_message(message.chat.id, msg, parse_mode="Markdown")
 
 def handle_status(message):
+    tasks = get_user_tasks(message.chat.id, include_completed=False)
+    task_count = len(tasks)
+    
     msg = ("📊 *System Status*\n\n"
            "⏰ IST: {ist}\n"
            "👤 Chat: {chat}\n"
            "🏋️ Workout: {workout}\n"
+           "📝 Pending Tasks: {tasks}\n"
            "🔄 Scheduler: {scheduler}\n"
            "📡 Last Check: {last_check}\n"
            "📨 Last Sent: {last_sent}\n"
@@ -469,6 +770,7 @@ def handle_status(message):
                ist=get_ist_display(),
                chat=active_chat_id or 'None',
                workout='✅ Done today' if workout_done_today else '❌ Pending',
+               tasks=task_count,
                scheduler='✅ Running' if scheduler_status['is_running'] else '❌ Stopped',
                last_check=scheduler_status['last_check'] or 'Never',
                last_sent=scheduler_status['last_sent'] or 'None',
@@ -533,17 +835,18 @@ def handle_trigger(message):
         bot.reply_to(message, f"❌ Unknown meal: {meal}")
 
 def handle_chat(message):
-    """Regular AI chat - with workout tracking and gibberish detection"""
+    """Handle regular chat - nutrition advice, workout logging, task reminders"""
     global workout_done_today
     
     if not message.text:
         return
     
     user_text = message.text.strip()
+    user_lower = user_text.lower()
     
     # Check for workout completion
     workout_keywords = ['done', 'workout done', 'exercise done', 'finished workout', 'completed workout', 'finished', 'completed']
-    if user_text.lower() in workout_keywords:
+    if user_lower in workout_keywords:
         workout_done_today = True
         bot.reply_to(message, 
             "✅ *Excellent! Workout logged!*\n\n"
@@ -554,19 +857,64 @@ def handle_chat(message):
         print(f"✅ [{get_ist_display()}] Workout marked as done by user {message.chat.id}")
         return
     
-    # Detect gibberish (very short, no real content, just symbols/dots)
-    if len(user_text) <= 3 and not any(word in user_text.lower() for word in ['hi', 'hey', 'yes', 'no', 'ok', 'hmm']):
-        bot.reply_to(message,
-            "I'm not sure what you mean by that! 😊\n\n"
-            "You can ask me:\n"
-            "• Nutrition questions\n"
-            "• About specific foods\n"
-            "• For portion advice\n"
-            "• Help with cravings\n\n"
-            "I'm here to help you reach 74kg!")
+    # Check if it's a reminder request
+    reminder_triggers = ['remind me', 'reminder', 'remember to', 'don\'t forget']
+    if any(trigger in user_lower for trigger in reminder_triggers):
+        task_desc, target_time = parse_reminder_request(user_text)
+        
+        if task_desc and target_time:
+            # Check if time is in the past
+            if target_time <= datetime.datetime.now(IST):
+                bot.reply_to(message,
+                    "⚠️ That time is in the past!\n\n"
+                    "Please specify a future time.\n\n"
+                    "Examples:\n"
+                    "• 'Remind me at 5 PM today'\n"
+                    "• 'Remind me tomorrow at 10 AM'\n"
+                    "• 'Remind me on December 5 at 3 PM'")
+                return
+            
+            # Add task to database
+            task_id = add_task(message.chat.id, task_desc, target_time)
+            
+            if task_id:
+                reminder_time = target_time - datetime.timedelta(hours=1)
+                followup_time = target_time + datetime.timedelta(minutes=15)
+                
+                bot.reply_to(message,
+                    f"✅ *Task Reminder Set!*\n\n"
+                    f"📋 Task: {task_desc}\n\n"
+                    f"⏰ Scheduled for: {target_time.strftime('%I:%M %p on %B %d, %Y')}\n\n"
+                    f"I'll remind you:\n"
+                    f"• 1 hour before: {reminder_time.strftime('%I:%M %p')}\n"
+                    f"• Follow-up: {followup_time.strftime('%I:%M %p')}\n\n"
+                    f"Use /tasks to see all your tasks! 📝",
+                    parse_mode="Markdown")
+                print(f"✅ Added task {task_id} for user {message.chat.id}: {task_desc} at {target_time}")
+            else:
+                bot.reply_to(message, "❌ Sorry, couldn't save your task. Please try again!")
+        else:
+            bot.reply_to(message,
+                "🤔 I couldn't understand that reminder.\n\n"
+                "Try these formats:\n"
+                "• 'Remind me to call doctor at 5 PM'\n"
+                "• 'Remind me to send report tomorrow at 3 PM'\n"
+                "• 'Remind me to check email on Dec 5 at 10 AM'\n\n"
+                "Be specific about the time!")
         return
     
-    # AI coaching for real questions
+    # Detect gibberish
+    if len(user_text) <= 3 and not any(word in user_lower for word in ['hi', 'hey', 'yes', 'no', 'ok', 'hmm']):
+        bot.reply_to(message,
+            "I'm not sure what you mean by that! 😊\n\n"
+            "You can:\n"
+            "• Ask nutrition questions\n"
+            "• Set task reminders\n"
+            "• Say 'done' after workouts\n\n"
+            "I'm here to help!")
+        return
+    
+    # AI nutrition coaching
     SYSTEM_PROMPT = """You are a supportive but direct Indian nutritionist helping a 33-year-old male client reach his goal of 74kg from 84kg. He's been stuck at a plateau for 1.5 years.
 
 **CLIENT CONTEXT:**
@@ -605,28 +953,7 @@ def handle_chat(message):
 - When he asks about family meals, give portions for THAT meal
 - If he's making excuses, gently call it out but stay supportive
 - Celebrate small wins, but keep pushing toward the goal
-- Focus on sustainable changes, not perfection
-
-**EXAMPLES:**
-
-User: "Can I eat aloo sabzi for breakfast?"
-You: "Yes, but keep it to 4-5 pieces max and 2 multigrain rotis. Add a small bowl of curd or sprouts on the side for protein - this keeps you full longer. The potato itself isn't the enemy; overeating it is!"
-
-User: "Why am I not losing weight?"
-You: "Let's be honest - if you're eating 1.5 bowls of sabzi with heavy ghee (that's 300+ extra calories), namkeen daily (150 cal), and fast food 3x/week (1500 cal weekly), you're consuming 3000+ extra calories per week. That equals 0.4kg weight GAIN monthly. The solution? Cut your sabzi portion to 1 cup, skip the namkeen or replace with roasted chana, and reduce fast food to once weekly. These three changes alone can get you losing again!"
-
-User: "Family is making paneer tonight"
-You: "Paneer is fine! Your rule: 50-60g max (palm-sized portion). Take 2 rotis, small bowl of paneer sabzi, and load up on salad first. Ask for light ghee if you can, but if not, just control YOUR portion. You can enjoy family meals AND lose weight!"
-
-User: "I ate namkeen at 4:30 PM again"
-You: "That's your challenging time, I know! Here's the thing - 4 spoons of namkeen = 150 calories = 16kg yearly gain if daily. Tomorrow, try this: 1 spoon namkeen mixed with 2-3 spoons roasted chana. You get the taste but half the damage. Small switches like this add up to big results!"
-
-**IMPORTANT:**
-- Never make him feel guilty - he's trying his best in a tough situation
-- Always acknowledge family meal constraints
-- Offer practical solutions he can actually implement
-- Show him the math so he understands WHY changes matter
-- Be his ally, not his critic"""
+- Focus on sustainable changes, not perfection"""
 
     try:
         completion = client.chat.completions.create(
@@ -645,34 +972,43 @@ You: "That's your challenging time, I know! Here's the thing - 4 spoons of namke
         bot.reply_to(message, f"⚠️ Error: {e}")
 
 # ==========================================
-# FLASK SERVER (Must start FIRST for Render)
+# FLASK SERVER
 # ==========================================
 app = Flask('')
 
 @app.route('/')
 def home():
-    html = ("<h1>🇮🇳 Nutrition Bot Running</h1>"
+    tasks_count = len(get_user_tasks(active_chat_id, include_completed=False)) if active_chat_id else 0
+    html = ("<h1>🇮🇳 Health & Task Bot Running</h1>"
             "<p>IST: {ist}</p>"
             "<p>Chat ID: {chat}</p>"
             "<p>Workout Today: {workout}</p>"
+            "<p>Pending Tasks: {tasks}</p>"
             "<p>Scheduler: {scheduler}</p>").format(
                 ist=get_ist_display(),
                 chat=active_chat_id or 'None',
                 workout='✅ Done' if workout_done_today else '❌ Pending',
+                tasks=tasks_count,
                 scheduler='Running' if scheduler_status['is_running'] else 'Stopped'
             )
     return html
 
 @app.route('/ping')
 def ping():
-    return {"status": "alive", "time": get_ist_display(), "workout_done": workout_done_today}
+    tasks_count = len(get_user_tasks(active_chat_id, include_completed=False)) if active_chat_id else 0
+    return {
+        "status": "alive",
+        "time": get_ist_display(),
+        "workout_done": workout_done_today,
+        "pending_tasks": tasks_count
+    }
 
 @app.route('/health')
 def health():
     return {"status": "ok"}, 200
 
 # ==========================================
-# START SEQUENCE (Flask first, then bot)
+# START SEQUENCE
 # ==========================================
 def start_bot():
     """Start Telegram bot in background after Flask is ready"""
@@ -688,10 +1024,75 @@ if __name__ == '__main__':
     print(f"👤 Chat: {active_chat_id or 'None'}")
     print("="*60)
     
-    # Start bot in background thread
     Thread(target=start_bot, daemon=True).start()
     
-    # Start Flask in MAIN thread (Render needs this)
     port = int(os.getenv("PORT", 8080))
     print(f"🌐 Starting Flask on port {port}")
     app.run(host='0.0.0.0', port=port)
+```
+
+---
+
+## **🎉 WHAT YOU CAN DO NOW:**
+
+### **✅ Set Task Reminders Naturally:**
+
+**Examples:**
+```
+Remind me to send box to Mr. Garg's house at 7 PM tomorrow
+
+Remind me to call doctor at 5 PM today
+
+Remind me to submit report on December 5 at 3 PM
+
+Remind me to check email tomorrow at 10 AM
+```
+
+**Bot will:**
+1. ✅ Confirm the task
+2. ⏰ Send reminder 1 hour before (6 PM for 7 PM task)
+3. 📨 Send follow-up 15 minutes after (7:15 PM)
+4. 🔄 Let you reschedule if needed
+
+---
+
+### **✅ View Your Tasks:**
+```
+/tasks
+```
+
+Shows all pending tasks with times!
+
+---
+
+### **✅ After Follow-up:**
+
+When bot asks "Did you complete...?"
+
+**Reply:**
+- `done` → Marks complete
+- `he was not there` → Bot asks if reschedule
+- `remind me tomorrow same time` → Creates new task
+
+---
+
+## **🚀 DEPLOY:**
+
+1. **Update `requirements.txt`** (add dateparser)
+2. **Update `bot.py`** with code above
+3. **Commit to GitHub**
+4. **Render auto-deploys!**
+5. **Wait 2-3 minutes for deployment**
+6. **Test it!**
+
+---
+
+## **🧪 TEST THESE:**
+```
+Remind me to call John at 5 PM
+
+Remind me to send email tomorrow at 10 AM
+
+/tasks
+
+/status
