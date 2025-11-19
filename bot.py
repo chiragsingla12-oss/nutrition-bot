@@ -604,16 +604,58 @@ threading.Thread(target=scheduler, daemon=True).start()
 # MESSAGE HANDLERS
 # ==========================================
 
+@bot.message_handler(content_types=['voice'])
+def handle_voice(message):
+    """Handle voice messages - transcribe and process"""
+    try:
+        processing_msg = bot.reply_to(message, "🎙️ Transcribing your voice message...")
+        
+        file_info = bot.get_file(message.voice.file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        
+        temp_file = f"/tmp/voice_{message.chat.id}_{int(time.time())}.ogg"
+        with open(temp_file, 'wb') as f:
+            f.write(downloaded_file)
+        
+        with open(temp_file, 'rb') as audio_file:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file
+            )
+        
+        transcribed_text = transcript.text
+        
+        bot.delete_message(message.chat.id, processing_msg.message_id)
+        
+        bot.reply_to(message, f"🎙️ *You said:*\n\"{transcribed_text}\"", parse_mode="Markdown")
+        
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        
+        class MockMessage:
+            def __init__(self, original_msg, text):
+                self.chat = original_msg.chat
+                self.text = text
+                self.message_id = original_msg.message_id
+        
+        mock_msg = MockMessage(message, transcribed_text)
+        handle_chat(mock_msg)
+        
+    except Exception as e:
+        bot.reply_to(message, f"❌ Sorry, couldn't transcribe: {str(e)[:100]}")
+        print(f"❌ Voice transcription error: {e}")
+
+
 @bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
+    """Handle text messages"""
     if not message.text:
         return
-
+    
     text = message.text
     chat_id = message.chat.id
-
     print(f"📨 Received: '{text}' from {chat_id}")
-
+    
     if text == '/start':
         handle_start(message)
     elif text == '/debug':
