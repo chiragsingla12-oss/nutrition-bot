@@ -953,8 +953,9 @@ def handle_chat(message):
 
         if task_desc and target_time:
             ist_now = datetime.datetime.now(IST)
-print(f"🕐 DEBUG: Current IST: {ist_now}, Target: {target_time}")  # Debug log
-if target_time <= ist_now:
+            print(f"🕐 DEBUG: Current IST: {ist_now}, Target: {target_time}")
+            
+            if target_time <= ist_now:
                 bot.reply_to(message,
                     "⚠️ That time is in the past!\n\n"
                     "Please specify a future time.\n\n"
@@ -967,35 +968,31 @@ if target_time <= ist_now:
             task_id = add_task(message.chat.id, task_desc, target_time)
 
             if task_id:
-    ist_now = datetime.datetime.now(IST)
-    time_until_task = (target_time - ist_now).total_seconds() / 60  # minutes
-    
-    reminder_time = target_time - datetime.timedelta(hours=1)
-    followup_time = target_time + datetime.timedelta(minutes=15)
-    
-    if time_until_task < 60:
-        # Immediate reminder case
-        bot.reply_to(message,
-            f"✅ *Task Reminder Set!*\n\n"
-            f"📋 Task: {task_desc}\n\n"
-            f"⏰ Scheduled for: {target_time.strftime('%I:%M %p on %B %d, %Y')}\n\n"
-            f"🚨 Immediate reminder sent (less than 1 hour away)!\n"
-            f"📨 Follow-up at: {followup_time.strftime('%I:%M %p')}\n\n"
-            f"Use /tasks to see all your tasks! 📝",
-            parse_mode="Markdown")
-    else:
-        # Normal case
-        bot.reply_to(message,
-            f"✅ *Task Reminder Set!*\n\n"
-            f"📋 Task: {task_desc}\n\n"
-            f"⏰ Scheduled for: {target_time.strftime('%I:%M %p on %B %d, %Y')}\n\n"
-            f"I'll remind you:\n"
-            f"• 1 hour before: {reminder_time.strftime('%I:%M %p')}\n"
-            f"• Follow-up: {followup_time.strftime('%I:%M %p')}\n\n"
-            f"Use /tasks to see all your tasks! 📝",
-            parse_mode="Markdown")
-    
-    print(f"✅ Added task {task_id} for user {message.chat.id}: {task_desc} at {target_time}")
+                time_until_task = (target_time - ist_now).total_seconds() / 60
+                
+                reminder_time = target_time - datetime.timedelta(hours=1)
+                followup_time = target_time + datetime.timedelta(minutes=15)
+                
+                if time_until_task < 60:
+                    bot.reply_to(message,
+                        f"✅ *Task Reminder Set!*\n\n"
+                        f"📋 Task: {task_desc}\n\n"
+                        f"⏰ Scheduled for: {target_time.strftime('%I:%M %p on %B %d, %Y')}\n\n"
+                        f"🚨 Immediate reminder sent (less than 1 hour away)!\n"
+                        f"📨 Follow-up at: {followup_time.strftime('%I:%M %p')}\n\n"
+                        f"Use /tasks to see all your tasks! 📝",
+                        parse_mode="Markdown")
+                else:
+                    bot.reply_to(message,
+                        f"✅ *Task Reminder Set!*\n\n"
+                        f"📋 Task: {task_desc}\n\n"
+                        f"⏰ Scheduled for: {target_time.strftime('%I:%M %p on %B %d, %Y')}\n\n"
+                        f"I'll remind you:\n"
+                        f"• 1 hour before: {reminder_time.strftime('%I:%M %p')}\n"
+                        f"• Follow-up: {followup_time.strftime('%I:%M %p')}\n\n"
+                        f"Use /tasks to see all your tasks! 📝",
+                        parse_mode="Markdown")
+                
                 print(f"✅ Added task {task_id} for user {message.chat.id}: {task_desc} at {target_time}")
             else:
                 bot.reply_to(message, "❌ Sorry, couldn't save your task. Please try again!")
@@ -1008,7 +1005,6 @@ if target_time <= ist_now:
                 "• Remind me to check email on Dec 5 at 10 AM\n\n"
                 "Be specific about the time!")
         return
-
     if len(user_text) <= 3 and not any(word in user_lower for word in ['hi', 'hey', 'yes', 'no', 'ok', 'hmm']):
         bot.reply_to(message,
             "I'm not sure what you mean by that! 😊\n\n"
