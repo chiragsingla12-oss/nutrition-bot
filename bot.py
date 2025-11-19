@@ -254,53 +254,51 @@ def parse_reminder_request(text):
             task_desc = text
             time_phrase = text
         
-        # Get current IST time for reference
+        # Get current IST time
         ist_now = datetime.datetime.now(IST)
         
-        # Parse with explicit settings
+        # Parse the date/time - let dateparser handle it first
         parsed_date = dateparser.parse(
             time_phrase,
             settings={
-                'TIMEZONE': 'Asia/Kolkata',
-                'RETURN_AS_TIMEZONE_AWARE': True,
                 'PREFER_DATES_FROM': 'future',
-                'RELATIVE_BASE': ist_now.replace(tzinfo=None)  # Use IST as base
+                'RETURN_AS_TIMEZONE_AWARE': False  # Get naive datetime first
             }
         )
         
         if parsed_date is None:
             return None, None
         
-        # Ensure timezone is IST
-        if parsed_date.tzinfo is None:
-            # If no timezone, assume IST
-            target_time = IST.localize(parsed_date)
-        else:
-            # Convert to IST
-            target_time = parsed_date.astimezone(IST)
+        # Now convert to IST-aware datetime
+        target_time = IST.localize(parsed_date)
         
-        # If parsed time is in the past but user said "at X PM today", add to today
+        # Check if it's in the past
         if target_time <= ist_now:
-            # Check if user specified a time without date
+            # If in past and no explicit date mentioned, assume user means today/tomorrow
             if 'tomorrow' not in time_phrase.lower() and 'next' not in time_phrase.lower():
-                # Try parsing just the time
-                time_only = dateparser.parse(
+                # Try to extract just the time and apply it to today
+                time_only_parsed = dateparser.parse(
                     time_phrase,
-                    settings={'PARSERS': ['absolute-time']}
+                    settings={
+                        'PARSERS': ['absolute-time'],
+                        'RETURN_AS_TIMEZONE_AWARE': False
+                    }
                 )
-                if time_only:
-                    # Combine today's date with parsed time
+                
+                if time_only_parsed:
+                    # Apply this time to today's date
                     target_time = ist_now.replace(
-                        hour=time_only.hour,
-                        minute=time_only.minute,
+                        hour=time_only_parsed.hour,
+                        minute=time_only_parsed.minute,
                         second=0,
                         microsecond=0
                     )
+                    
                     # If still in past, add one day
                     if target_time <= ist_now:
                         target_time = target_time + datetime.timedelta(days=1)
         
-        # Extract task description if needed
+        # Extract task description if empty
         if not task_desc or len(task_desc) < 3:
             original_lower = text.lower()
             for word in time_phrase.split():
@@ -309,10 +307,16 @@ def parse_reminder_request(text):
                     task_desc = text[:idx].strip()
                     break
         
+        # Final check - make sure we have a valid future time
+        if target_time <= ist_now:
+            return None, None
+        
         return task_desc, target_time
         
     except Exception as e:
         print(f"❌ Error parsing reminder: {e}")
+        import traceback
+        traceback.print_exc()
         return None, None
 
 # ==========================================
