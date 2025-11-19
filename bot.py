@@ -309,7 +309,7 @@ def get_exercise_reminder(time_of_day):
             "• Light snack if needed (banana/5-6 almonds)\n"
             "• Drink water before starting\n"
             "• This consistency will help break your plateau!\n\n"
-            "✅ Reply 'done' after your workout!"
+            "✅ Reply 'workout done' after your workout!"
         )
     else:
         return (
@@ -323,7 +323,7 @@ def get_exercise_reminder(time_of_day):
             "  - 30 sec plank\n"
             "  - 20 jumping jacks\n\n"
             "💪 Consistency is key to breaking your plateau!\n\n"
-            "✅ Reply 'done' when finished!"
+            "✅ Reply 'workout done' when finished!"
         )
 
 def get_food_options(meal):
@@ -871,7 +871,7 @@ def handle_chat(message):
             "You can:\n"
             "• Ask nutrition questions\n"
             "• Set task reminders\n"
-            "• Say 'done' after workouts\n\n"
+            "• Say 'workout done' after workouts\n\n"
             "I'm here to help!")
         return
 
